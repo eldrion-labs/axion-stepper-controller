@@ -1,0 +1,91 @@
+# ============================================================
+# ENCODER DRIFT TEST -- MVP RP2040 Motor Driver
+# ============================================================
+# Every verify happens at commanded position 0, i.e. the SAME physical
+# shaft angle as home. This cancels the AS5601's position-dependent
+# angular error (magnet eccentricity), so any change in dev across
+# cycles is real drift, not the encoder reading a different part of
+# its own arc.
+#
+# 1 encoder count = 3200/4096 = 0.78125 usteps. dev ~0.8 at position 0
+# is one LSB of quantization = healthy.
+#
+# The verify tolerances below are deliberately LOOSE -- they are a
+# tripwire to abort a runaway, not the measurement. The real data is
+# the "pos/enc/dev" line printed after every move. Watch the trend.
+#
+# Runtime ~3 min. Motor should be uncoupled or free to turn ~30 revs.
+# ============================================================
+
+set_home
+wait,0.5
+verify,5                     # smoke test: encoder alive and zeroed
+
+# --- Phase 1: repeatability, 1 rev out-and-back, proven speed -----
+# Baseline. dev at 0 should return to ~0.8 every single cycle.
+loop,5
+  move_to,3200,1500
+  wait,0.3
+  move_to,0,1500
+  wait,0.3
+  verify,50
+end_loop
+
+# --- Phase 2: multi-turn accumulation, 5 revs per leg -------------
+# Exercises poll()'s wrap correction 5x per leg. A missed wrap shows
+# up as dev jumping by ~3200 (or a multiple).
+loop,3
+  move_to,16000,1500
+  wait,0.3
+  move_to,0,1500
+  wait,0.3
+  verify,50
+end_loop
+
+# --- Phase 3: same test at 60 RPM (3200 usteps/s, gear 1) ---------
+# If dev grows here but not in Phase 1, it is speed-dependent:
+# lost steps (torque) or poll aliasing, not encoder drift.
+loop,3
+  move_to,9600,3200
+  wait,0.3
+  move_to,0,3200
+  wait,0.3
+  verify,50
+end_loop
+
+# --- Phase 4: continuous spin, then return to home ----------------
+# 5 s of unbroken rotation between position checks -- the longest
+# stretch where a poll gap can alias. Returns to commanded 0 and
+# verifies against the same physical angle as everything above.
+loop,3
+  spin,60,cw
+  wait,5
+  stop
+  wait,0.3
+  move_to,0,1500
+  wait,0.5
+  verify,50
+end_loop
+
+move_to,0,1500               # final settle at home
+wait,0.5
+verify,50
+disable
+
+# ============================================================
+# READING THE RESULTS -- dev at position 0, cycle over cycle:
+#
+#   ~0.8 every time ........... healthy. One encoder LSB.
+#   +/-10, not accumulating ... magnet alignment / noise floor.
+#                               Only suspicious if it exceeds the
+#                               ~9.4 you already see off-axis.
+#   creeping up steadily ...... real drift. Lost steps if it scales
+#                               with speed/accel; if it tracks total
+#                               distance instead, suspect poll().
+#   jump of ~3200 or 6400 ..... missed wrap in AS5601.poll(). One
+#                               rev = 4096 counts = 3200 usteps.
+#                               Check which phase it first appears in.
+#   jump at Phase 3/4 only .... speed-dependent. Drop accel or
+#                               raise run_current before blaming
+#                               the encoder.
+# ============================================================

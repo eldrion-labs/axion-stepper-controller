@@ -1,0 +1,116 @@
+# ============================================================
+# MAX SPEED (PULL-OUT) TEST -- MVP RP2040 Motor Driver
+# ============================================================
+# PREREQUISITES -- read all four before running:
+#
+#  1. motor_params.json: "encoder_stall_usteps": 0
+#     Report-only mode. Without this the watchdog estops + ERRORs
+#     at the first stall and you get ONE rung per boot instead of
+#     the whole curve. Restore it to 200 afterwards.
+#
+#  2. BARE MOTOR. Nothing coupled, nothing that cares about
+#     position. This test deliberately stalls the motor. It is
+#     loud and the shaft position is garbage after a stall.
+#
+#  3. Write down VPWR (measure it, don't assume 12V) and confirm
+#     run_current. Torque at speed scales with supply voltage and
+#     current -- the answer is only valid for the pair you used.
+#
+#  4. DIAG will not save you: TCOOLTHRS=0 outside sensorless
+#     homing, so StallGuard is disarmed and the stall is invisible
+#     to the driver. The encoder is the only instrument here.
+#
+# METHOD: each rung re-zeros, then slews 64000 usteps = exactly
+# 20 revs. 20 revs lands on the SAME shaft angle as home, so the
+# magnet's position-dependent error (~1 ustep at 0 deg) cancels
+# and the printed dev is lost motion, nothing else. 64000 divides
+# evenly by every gear (1/2/4), so there is no geared-landing
+# remainder either.
+#
+# Accel is held at the default 4000 throughout. Only speed varies.
+#
+# Runtime ~2 min. Directions alternate to keep net travel near 0.
+# ============================================================
+
+set_home
+wait,0.5
+verify,5                     # smoke test: encoder alive
+
+# --- rung 1: 3200 native = 60 RPM (gear 1) -- known-good baseline
+set_home
+move_rel,64000,3200,cw
+wait,0.5
+
+# --- rung 2: 4000 = 75 RPM (gear 1, gear_threshold ceiling)
+set_home
+move_rel,64000,4000,ccw
+wait,0.5
+
+# --- rung 3: 5000 = 94 RPM (gear 2 engages here)
+set_home
+move_rel,64000,5000,cw
+wait,0.5
+
+# --- rung 4: 6000 = 113 RPM (gear 2)
+set_home
+move_rel,64000,6000,ccw
+wait,0.5
+
+# --- rung 5: 7000 = 131 RPM (gear 2)
+set_home
+move_rel,64000,7000,cw
+wait,0.5
+
+# --- rung 6: 8000 = 150 RPM (gear 2 ceiling)
+set_home
+move_rel,64000,8000,ccw
+wait,0.5
+
+# --- rung 7: 9000 = 169 RPM (gear 4 engages here)
+set_home
+move_rel,64000,9000,cw
+wait,0.5
+
+# --- rung 8: 10000 = 188 RPM (gear 4)
+set_home
+move_rel,64000,10000,ccw
+wait,0.5
+
+# --- rung 9: 11000 = 206 RPM (gear 4)
+set_home
+move_rel,64000,11000,cw
+wait,0.5
+
+# --- rung 10: 12000 = 225 RPM (gear 4) -- max_speed param ceiling
+set_home
+move_rel,64000,12000,ccw
+wait,0.5
+
+disable
+
+# ============================================================
+# READING IT -- the dev printed after each move_rel:
+#
+#   |dev| < ~10 ......... clean. Full 64000 delivered. That rung
+#                         passed; the magnet error at 0 deg is
+#                         ~1 ustep and quantization is 0.78.
+#   |dev| in the 100s ... marginal. Losing steps but still
+#                         turning -- you are at the knee.
+#   |dev| in the 1000s .. stalled. 3200 = one whole rev lost.
+#   |dev| ~= 64000 ...... never moved. Pull-out below this rung.
+#
+# Max speed = the last rung with |dev| < 10. Halve the step and
+# re-run around the knee to narrow it.
+#
+# CONFOUND: a stall during the ACCEL ramp and a stall at CRUISE
+# both just show up as a large dev. To tell them apart, drop
+# accel to 1000 in motor_params.json and re-run: if the knee
+# moves up, you were accel-limited, not speed-limited.
+#
+# CEILINGS YOU MAY HIT:
+#   * max_speed = 12000 -- rung 10 is the ladder's top. Above it
+#     _validate_speed raises and the sequence aborts.
+#   * Raising max_speed past ~13,850 (at accel=4000) trips
+#     _MAX_RAMP_STEPS: n_acc = speed^2/(2*accel*gear) must stay
+#     under 6000. Raise accel too, or the ramp build errors out.
+# ============================================================

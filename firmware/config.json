@@ -1,0 +1,75 @@
+{
+  "board": {
+    "type": "auto",
+    "step_backend": "auto",
+    "pins": {}
+  },
+
+  "motor": "NEMA11",
+
+  "motors": {
+    "NEMA11": {
+      "accel": 4000.0,
+      "decel": 4000.0,
+      "low_speed_cutoff": 100.0,
+      "max_speed": 12000.0,
+      "gear_threshold": 4000.0,
+      "steps_per_rev": 200,
+      "homing_speed": 800.0,
+      "sgthrs": 60,
+      "run_current": 5,
+      "hold_current": 1,
+      "internal_rsense": true,
+      "microsteps": 16,
+      "idle_timeout": 0.0
+    },
+    "NEMA14": {
+      "accel": 4000.0,
+      "decel": 4000.0,
+      "low_speed_cutoff": 100.0,
+      "max_speed": 12000.0,
+      "gear_threshold": 4000.0,
+      "steps_per_rev": 200,
+      "homing_speed": 800.0,
+      "sgthrs": 60,
+      "run_current": 10,
+      "hold_current": 3,
+      "internal_rsense": true,
+      "microsteps": 16,
+      "idle_timeout": 0.0
+    }
+  },
+
+  "io": {
+    "d1": {"mode": "input", "trigger": "low"},
+    "d2": {"mode": "input", "trigger": "low"},
+    "d3": {"mode": "input", "trigger": "low"}
+  },
+
+  "led": {
+    "brightness": 0.15
+  },
+
+  "i2c": {
+    "frequency": 400000,
+    "modules": {
+      "as5601": {
+        "enabled": true,
+        "invert": true,
+        "poll_ms": 25,
+        "stall_usteps": 200
+      },
+      "display": {
+        "enabled": true,
+        "mode": "message",
+        "flip": true,
+        "brightness": 0.8,
+        "dim_brightness": 0.05,
+        "dim_after_s": 60,
+        "sleep_after_s": 300,
+        "address": 60,
+        "colstart": 0
+      }
+    }
+  }
+}

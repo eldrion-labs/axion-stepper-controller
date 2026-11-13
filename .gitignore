@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Axion: local-only files
+Archive/
+CircuitPython IMG/
+
+# Axion: CircuitPython libraries are deployed from firmware/lib
+!firmware/lib/
