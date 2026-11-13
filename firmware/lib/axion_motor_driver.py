@@ -71,6 +71,7 @@ def _tmc_crc8(data):
 class TMC2209:
     # Register map (subset)
     GCONF      = 0x00
+    GSTAT      = 0x01
     IFCNT      = 0x02
     IHOLD_IRUN = 0x10
     TPOWERDOWN = 0x11
@@ -107,8 +108,23 @@ class TMC2209:
         self.uart.write(req)
         # 4-byte echo + 8-byte reply
         resp = self.uart.read(12)
-        if resp is None or len(resp) < 12:
-            raise RuntimeError("TMC2209: no UART reply (reg 0x%02X)" % reg)
+        got = 0 if resp is None else len(resp)
+        if got < 12:
+            # How many bytes came back says where the fault is:
+            #   0     RX heard nothing, not even our own request echoing
+            #         back on the single wire -> MCU-side TX/RX path
+            #   4     echo only: the wire is fine but the TMC2209 stayed
+            #         silent -> driver unpowered (no VPWR) or not in
+            #         UART mode
+            #   else  partial / garbled reply
+            if got == 0:
+                why = "no echo on RX: check TX/RX path to PDN_UART"
+            elif got == 4:
+                why = "echo ok, driver silent: is motor power (VPWR) on?"
+            else:
+                why = "partial reply, %d of 12 bytes" % got
+            raise RuntimeError("TMC2209: no UART reply (reg 0x%02X; %s)"
+                               % (reg, why))
         reply = resp[4:12]
         if _tmc_crc8(reply[:7]) != reply[7]:
             raise RuntimeError("TMC2209: CRC error (reg 0x%02X)" % reg)
@@ -136,6 +152,12 @@ class TMC2209:
         if params["internal_rsense"]:
             gconf |= (1 << 1)
         self.write_verified(self.GCONF, gconf)
+
+        # Clear the latched GSTAT flags (write 1 to clear). "reset" is set
+        # by every power-up, so without this it would be reported with
+        # every later fault. uv_cp is NOT latched: if it still reads 1
+        # after this, the undervoltage is present right now.
+        self.write_verified(self.GSTAT, 0x07)
 
         # CHOPCONF: keep reset defaults, set MRES for requested microstepping.
         self.set_mres(params["microsteps"])
@@ -185,6 +207,41 @@ class TMC2209:
 
     def drv_status(self):
         return self.read_reg(self.DRV_STATUS)
+
+    def fault_summary(self):
+        """Human-readable decode of GSTAT + DRV_STATUS for error messages.
+        GSTAT reset and drv_err are latched until written (configure()
+        clears them), so they still show the cause after the driver has
+        been disabled. uv_cp is live: set means the fault is present now."""
+        g = self.read_reg(self.GSTAT)
+        ds = self.read_reg(self.DRV_STATUS)
+        flags = []
+        if g & 0x01:
+            flags.append("reset (driver lost power/restarted since it "
+                         "was configured)")
+        if g & 0x02:
+            flags.append("drv_err (shut down: overtemp or short)")
+        if g & 0x04:
+            flags.append("uv_cp (charge-pump undervoltage present NOW, "
+                         "outputs are off: motor supply too low, or "
+                         "charge-pump capacitors CPO-CPI / VCP-VS missing "
+                         "or badly soldered)")
+        if ds & (1 << 1):
+            flags.append("overtemp")
+        elif ds & (1 << 0):
+            flags.append("overtemp pre-warning")
+        if ds & (0x3 << 2):
+            flags.append("short to GND (A=%d B=%d)"
+                         % ((ds >> 2) & 1, (ds >> 3) & 1))
+        if ds & (0x3 << 4):
+            flags.append("low-side short (A=%d B=%d)"
+                         % ((ds >> 4) & 1, (ds >> 5) & 1))
+        if ds & (0x3 << 6):
+            flags.append("open load (A=%d B=%d): motor wired?"
+                         % ((ds >> 6) & 1, (ds >> 7) & 1))
+        return "%s [GSTAT=0x%X DRV_STATUS=0x%08X]" % (
+            ", ".join(flags) if flags
+            else "no fault flags set (while moving: StallGuard stall)", g, ds)
 
 
 
@@ -697,6 +754,14 @@ class MotorDriver:
         self._hw_usteps = self.params["microsteps"]
         self._auto_disabled = False
         self.state = self.HOLDING
+        if self.diag.value:
+            # DIAG should be LOW at standstill. Report it now, with the
+            # driver's own status, rather than at the first move.
+            try:
+                detail = self.tmc.fault_summary()
+            except RuntimeError as e:
+                detail = "status read failed (%s)" % e
+            print("WARNING: DIAG is already HIGH at standstill: %s" % detail)
 
     def disable(self):
         self.motion.estop()
@@ -872,6 +937,11 @@ class MotorDriver:
                 self.motion.estop()
                 self.enn.value = True
                 self.error_msg = "DIAG asserted (stall/fault)"
+                try:
+                    self.error_msg = ("DIAG asserted: %s"
+                                      % self.tmc.fault_summary())
+                except RuntimeError:
+                    pass   # UART unavailable: keep the generic message
                 self.state = self.ERROR
             elif not self.motion.moving:
                 self.state = self.HOLDING
