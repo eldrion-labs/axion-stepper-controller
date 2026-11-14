@@ -10,9 +10,10 @@ profile, attached I2C modules), initializes the board, enables the driver,
 then executes the CSV commands in order. Progress and errors print to the
 serial console; the status LED reflects driver state throughout.
 
-  /config.json    WHAT the hardware is: motor profile, D1-D3 modes, which
-                  I2C modules are attached and their settings (including
-                  all OLED settings)
+  /config.json    WHAT the hardware is: Axion PCB revision, motor
+                  profile, terminal pin modes, thermistor, which I2C
+                  modules are attached and their settings (including all
+                  OLED settings)
   /sequence.csv   WHAT the motor does: motion, waits, loops, messages
 
 Units: positions and speeds are ALWAYS in native 16-microstep units
@@ -26,8 +27,15 @@ comment, blank lines ignored, case-insensitive:
   enable                          re-enable driver (after estop/disable)
   disable                         disable driver (frees motor)
   set_home                        zero the position counter
-  home_endstop, cw|ccw, n         home toward endstop D<n> (input mode)
+  home_endstop, cw|ccw, n         home toward endstop D<n> (input mode).
+                                  D<n> terminals: 1-3 on PCB rev 1.0,
+                                  0-2 on rev 1.1
   home_stallguard, cw|ccw         sensorless home (SGTHRS must be tuned)
+  home_encoder                    set the position from the AS5601's
+                                  absolute angle and the home angle saved
+                                  by code-set_home.py (no motion; follow
+                                  with move_to, 0, speed). Encoder must
+                                  turn 1:1 with the axis.
   move_to, position, speed        absolute trapezoidal move (microsteps)
   move_rel, steps, speed, cw|ccw  relative move
   move_at, speed, cw|ccw          continuous motion (pair with wait+stop)
@@ -190,6 +198,13 @@ def cmd_set_home(drv, a):
     return True
 
 
+def cmd_home_encoder(drv, a):
+    pos = drv.home_from_encoder()
+    say("    position from encoder: %d usteps from home" % pos,
+        "enc home %d" % pos)
+    return True
+
+
 def cmd_home_endstop(drv, a):
     drv.home_endstop(_dir(a[0]), endstop=int(a[1]))
     return pump_until_idle(drv)
@@ -290,6 +305,7 @@ COMMANDS = {
     "home_endstop": (cmd_home_endstop, 2),
     "home_stallguard": (cmd_home_stallguard, 1),
     "move_to": (cmd_move_to, 2),
+    "home_encoder": (cmd_home_encoder, 0),
     "move_rel": (cmd_move_rel, 3),
     "move_at": (cmd_move_at, 2),
     "spin": (cmd_spin, 2),
@@ -396,6 +412,16 @@ try:
     else:
         say("Encoder: not present -- running open-loop", "no encoder")
 
+    if drv.thermistor is not None:
+        t = drv.read_temperature()
+        if t is None:
+            say("Board temperature: thermistor reading out of range",
+                "temp: bad reading")
+        else:
+            say("Board temperature: %.1f C (shutdown at %s C)"
+                % (t, drv.config.thermistor["limit_c"] or "--"),
+                "temp %d C" % int(t))
+
     ok = True
     ip = 0
     loop_stack = []   # [start_ip, remaining_or_None, until_pin_or_None]
@@ -495,6 +521,6 @@ except KeyboardInterrupt:
 finally:
     try:
         drv.disable()
-        print("Driver disabled (ENN high).")
+        print("Driver disabled (outputs off).")
     except Exception as e:
         print("!! could not disable driver:", e)

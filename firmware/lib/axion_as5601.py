@@ -40,6 +40,16 @@ class AS5601:
         b = self._read_reg(self.REG_RAW_ANGLE, 2)
         return ((b[0] << 8) | b[1]) & 0x0FFF
 
+    @property
+    def raw(self):
+        """Last-sampled raw angle, 0-4095 (absolute within one turn)."""
+        return self._last
+
+    def read_raw(self):
+        """Sample and return the raw angle now, without touching the
+        accumulated count."""
+        return self._read_raw()
+
     def poll(self):
         """Sample the angle and accumulate the (wrap-corrected) delta."""
         raw = self._read_raw()

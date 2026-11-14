@@ -5,7 +5,9 @@ The driver core never touches `board.<pin>` or a chip-specific module
 directly. It asks a Board for:
 
   board.pin("step")       a pin object for a ROLE (enn, dir, step, diag,
-                          uart_tx, uart_rx, sda, scl, d1, d2, d3)
+                          uart_tx, uart_rx, sda, scl, d0..d3, thermistor)
+  board.has("enn")        whether this PCB revision has that role at all
+  board.io_pins           which D<n> terminals are general-purpose IO
   board.make_stepgen()    the step-pulse generator for this chip
   board.make_led(level)   the status LED for this board
   board.make_uart()       the TMC2209 UART
@@ -19,12 +21,21 @@ wiring is the same and the D-pin names line up):
   seeed_xiao_esp32c6      pulseio (RMT) step generator, single user LED
                           EXPERIMENTAL -- see axion_stepgen_pulseio.py
 
+Axion PCB revisions ("revision" in the "board" section of config.json):
+
+  "1.0"   D0 = TMC2209 ENN (MCU-driven enable), D1/D2/D3 = IO terminals
+  "1.1"   D0/D1/D2 = IO terminals, D3 = 10k NTC thermistor under the
+          TMC2209. ENN is NOT on an MCU pin: it is held high through a
+          10 uF cap at power-up and pulled to GND by 56k, so the driver
+          enables itself ~1 s after power-up and the firmware switches
+          the outputs on/off over UART instead (CHOPCONF.TOFF).
+
 Adding a board: add an entry to BOARDS. Only list what differs from
 _XIAO_PINS; the LED type is detected from what the `board` module offers.
 Anything can also be overridden per-device from config.json:
 
-  "board": {"type": "auto", "step_backend": "auto",
-            "pins": {"d3": "D3", "step": "D9"}}
+  "board": {"type": "auto", "revision": "1.1", "step_backend": "auto",
+            "pins": {"step": "D9"}}
 """
 
 import board as _cp_board
@@ -44,6 +55,25 @@ _XIAO_PINS = {
     "step": "D9",
     "diag": "D10",      # stall / driver fault input
 }
+
+# Axion PCB revision -> IO terminal numbers + pin-role changes relative to
+# _XIAO_PINS. A role mapped to None does not exist on that revision.
+REVISIONS = {
+    "1.0": {
+        "io": (1, 2, 3),
+        "pins": {},
+    },
+    "1.1": {
+        "io": (0, 1, 2),
+        "pins": {
+            "enn": None,          # hard-wired (RC to GND), see docstring
+            "d0": "D0",
+            "d3": None,
+            "thermistor": "D3",   # 10k NTC divider under the TMC2209
+        },
+    },
+}
+DEFAULT_REVISION = "1.0"
 
 BOARDS = {
     "seeeduino_xiao_rp2040": {
@@ -91,16 +121,32 @@ class Board:
                              "'pulseio', got %r" % backend)
         self.step_backend = backend
 
+        revision = cfg.get("revision", DEFAULT_REVISION)
+        if isinstance(revision, (int, float)):
+            revision = "%.1f" % revision      # JSON 1.1 -> "1.1"
+        rev = REVISIONS.get(revision)
+        if rev is None:
+            raise ValueError("board revision must be one of %s, got %r"
+                             % (", ".join(sorted(REVISIONS)), revision))
+        self.revision = revision
+        self.io_pins = rev["io"]
+
         self._pins = dict(_XIAO_PINS)
+        self._pins.update(rev["pins"])
         self._pins.update(profile["pins"])
         self._pins.update(cfg.get("pins") or {})
 
     # ---- pins -----------------------------------------------------------
+    def has(self, role):
+        """True if this PCB revision assigns a pin to `role`."""
+        return self._pins.get(role) is not None
+
     def pin_name(self, role):
-        try:
-            return self._pins[role]
-        except KeyError:
-            raise ValueError("no pin assigned to role %r" % role)
+        name = self._pins.get(role)
+        if name is None:
+            raise ValueError("no pin assigned to role %r on board "
+                             "revision %s" % (role, self.revision))
+        return name
 
     def pin(self, role):
         name = self.pin_name(role)
@@ -147,8 +193,8 @@ class Board:
             return None
 
     def describe(self):
-        return "%s (%s), step backend: %s" % (self.name, self.id,
-                                              self.step_backend)
+        return "%s (%s), Axion V%s, step backend: %s" % (
+            self.name, self.id, self.revision, self.step_backend)
 
 
 def _guess_backend():

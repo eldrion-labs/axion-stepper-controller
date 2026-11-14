@@ -3,10 +3,13 @@ axion_config.py - one JSON file describes the whole setup.
 
 /config.json on the CIRCUITPY drive holds:
 
-  board    which MCU board and (optionally) pin / step-backend overrides
+  board    which MCU board, which Axion PCB revision, and (optionally)
+           pin / step-backend overrides
   motor    name of the active motor profile
   motors   named motor profiles (current, speed limits, ramps ...)
-  io       D1/D2/D3 terminal pin modes and trigger polarity
+  io       D0..D3 terminal pin modes and trigger polarity (which of
+           them exist depends on the PCB revision)
+  thermistor  board temperature sensor (PCB revision 1.1)
   led      status LED settings
   i2c      bus speed + the modules attached to it (as5601, display, ...)
 
@@ -71,7 +74,8 @@ MOTOR_DEFAULTS = {
 }
 
 # --------------------------------------------------------------------------
-# D1/D2/D3 terminal pins
+# Terminal pins: D1/D2/D3 on PCB revision 1.0, D0/D1/D2 on revision 1.1
+# (settings for a pin the revision does not have are ignored)
 #   mode    "input" (readable / endstop) or "output" (dio_write, starts LOW)
 #   trigger "low"  = switch closes to GND (internal pullup, fail-safe with
 #                    NC switches; recommended)
@@ -81,7 +85,18 @@ MOTOR_DEFAULTS = {
 #                    or 3V3.
 # --------------------------------------------------------------------------
 IO_DEFAULTS = {"mode": "input", "trigger": "low"}
-IO_PINS = (1, 2, 3)
+IO_PINS = (0, 1, 2, 3)
+
+# Board temperature sensor (PCB revision 1.1; see axion_thermistor.py)
+THERMISTOR_DEFAULTS = {
+    "enabled": True,
+    "wiring": "ntc_to_gnd",     # or "ntc_to_3v3"
+    "r_fixed": 4700,            # fixed divider resistor, ohms
+    "r25": 10000,               # NTC resistance at 25 C
+    "beta": 3380,               # NTC B-constant (NCP15XH103: B25/50)
+    "limit_c": 85,              # shut down at/above this; 0 = report only
+    "poll_ms": 500,
+}
 
 LED_DEFAULTS = {
     "brightness": 0.15,         # status LED brightness 0.0-1.0 (NeoPixel
@@ -91,9 +106,13 @@ LED_DEFAULTS = {
 BOARD_DEFAULTS = {
     "type": "auto",             # "auto" = use board.board_id, or force one
                                 # of the names in axion_board.BOARDS
+    "revision": "1.0",          # Axion PCB revision: "1.0" or "1.1" (see
+                                # axion_board.REVISIONS). MUST match the
+                                # PCB: 1.0 drives D0 as the driver enable,
+                                # which on a 1.1 board is a user terminal.
     "step_backend": "auto",     # "auto", "pio" or "pulseio"
     "pins": {},                 # role -> board pin name overrides, e.g.
-                                # {"step": "D9", "d3": "D3"}
+                                # {"step": "D9"}
 }
 
 # --------------------------------------------------------------------------
@@ -115,6 +134,9 @@ I2C_DEFAULTS = {
                                   # (report-only). CALIBRATE "invert"
                                   # BEFORE enabling, or the first move
                                   # will false-trip.
+            "home_angle": None,   # raw encoder angle (0-4095) at the home
+                                  # position; written by code-set_home.py,
+                                  # used by MotorDriver.home_from_encoder()
         },
         "display": {
             "enabled": True,
@@ -194,6 +216,8 @@ class Config:
 
         self.board = _merged(BOARD_DEFAULTS, raw.get("board"))
         self.led = _merged(LED_DEFAULTS, raw.get("led"))
+        self.thermistor = _merged(THERMISTOR_DEFAULTS,
+                                  raw.get("thermistor"))
 
         # ---- motor profile ------------------------------------------
         self.motors = raw.get("motors") or {}
@@ -217,7 +241,7 @@ class Config:
                       % (k, self.motor_name))
         self.motor = _merged(MOTOR_DEFAULTS, profile)
 
-        # ---- D1..D3 ---------------------------------------------------
+        # ---- D0..D3 ---------------------------------------------------
         raw_io = raw.get("io") or {}
         self.io = {}
         for n in IO_PINS:
@@ -284,6 +308,7 @@ class Config:
         out = dict(self._raw)
         out["board"] = self.board
         out["led"] = self.led
+        out["thermistor"] = self.thermistor
         if self.motor_name is not None:
             motors = dict(self.motors)
             motors[self.motor_name] = self.motor

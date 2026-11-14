@@ -46,9 +46,10 @@ axion-stepper-controller/
 
 | Section | What it sets |
 |---|---|
-| `board` | Board type (`"auto"` detects it), optional pin and step-generator overrides |
+| `board` | MCU board type (`"auto"` detects it), Axion PCB `revision` (`"1.0"` or `"1.1"`), optional pin and step-generator overrides |
 | `motor` / `motors` | Active motor profile name, and the named profiles (currents, speed limits, ramps, microstepping) |
-| `io` | Mode and trigger polarity of the D1-D3 terminal pins |
+| `io` | Mode and trigger polarity of the terminal pins (D1-D3 on v1.0, D0-D2 on v1.1) |
+| `thermistor` | v1.1 board temperature sensor: divider wiring, NTC constants, shutdown limit |
 | `led` | Status LED brightness |
 | `i2c.modules` | Attached I2C modules and their settings: `as5601` (encoder), `display` (SSD1306 OLED) |
 
@@ -74,7 +75,12 @@ See `examples/` for full code and wiring notes.
 
 | Revision | Notes |
 |---|---|
-| v1.0 (Build 1) | Initial release |
+| v1.0 (Build 1) | Initial release. D0 drives the TMC2209 enable; D1-D3 are IO terminals. |
+| v1.1 | D0-D2 are IO terminals; D3 reads a 10k NTC thermistor under the TMC2209. The TMC2209 enable is hard-wired (RC to GND), so firmware switches the outputs on and off over UART. |
+
+Set `"revision"` in the `board` section of `config.json` to match your PCB. The shipped `config.json` is set for v1.1; on a v1.0 board change it to `"1.0"` and rename the `io` entries to `d1`-`d3`. A v1.0 setting on a v1.1 board drives D0, which is a user terminal there.
+
+The v1.1 thermistor needs D3 to be an analog pin. Only the XIAO RP2040 has one there; on the XIAO RP2350 and ESP32-C6 the firmware prints a warning and runs without temperature monitoring.
 
 ## License
 

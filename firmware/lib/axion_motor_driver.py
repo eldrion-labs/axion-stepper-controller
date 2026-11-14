@@ -23,14 +23,16 @@ Layers in this file (bottom to top):
        move_to(pos, speed), move_at(speed, dir), read_position(),
        stop(), estop(), is_moving()
 
-Pin roles (XIAO pin names; see axion_board.py to change them):
-  D0  -> ENN   (driver enable, active LOW)
+Pin roles (XIAO pin names; see axion_board.py to change them). The Axion
+PCB revision ("board" -> "revision" in config.json) decides D0-D3:
+  rev 1.0: D0 -> ENN (driver enable, active LOW), D1/D2/D3 -> terminals
+  rev 1.1: D0/D1/D2 -> terminals, D3 -> thermistor; ENN is hard-wired
+           and the outputs are switched over UART (CHOPCONF.TOFF)
   D8  -> DIR
   D9  -> STEP
   D10 -> DIAG  (input: stall / driver fault)
   TX  -> UART_TX -- 1k series R -- PDN_UART
   RX  -> UART_RX -- direct ------ PDN_UART
-  D1/D2/D3 -> screw terminal GPIO (endstops etc.)
   SDA/SCL  -> STEMMA QT (I2C modules)
 
 VALIDATION NOTES (untested-on-hardware items are flagged inline):
@@ -192,6 +194,24 @@ class TMC2209:
 
     def stall_disable(self):
         self.write_verified(self.TCOOLTHRS, 0)
+
+    # --- output stage on/off over UART -----------------------------------
+    # For boards where ENN is not on an MCU pin. CHOPCONF.TOFF = 0 switches
+    # all bridge outputs off (motor freewheels), exactly like ENN high;
+    # any other value enables the chopper. set_mres() is read-modify-
+    # write, so it preserves whichever state is current.
+    _toff = 3   # reset default; replaced by whatever the chip had
+
+    def outputs_off(self):
+        chop = self.read_reg(self.CHOPCONF)
+        if chop & 0xF:
+            self._toff = chop & 0xF
+            self.write_verified(self.CHOPCONF, chop & ~0xF)
+
+    def outputs_on(self):
+        chop = self.read_reg(self.CHOPCONF)
+        if not chop & 0xF:
+            self.write_verified(self.CHOPCONF, chop | self._toff)
 
     def set_mres(self, microsteps, force=False):
         """Set hardware microstep resolution (read-modify-write CHOPCONF).
@@ -631,7 +651,8 @@ class MotionController:
 
 
 class _DIO:
-    """General-purpose D1/D2/D3 terminal pin.
+    """General-purpose terminal pin (D1/D2/D3 on PCB rev 1.0, D0/D1/D2
+    on rev 1.1).
 
     mode="input": readable; `trigger` sets pull + active sense:
         trigger="low"  -> internal pullup,   triggered when pin reads LOW
@@ -688,10 +709,13 @@ class MotorDriver:
         print("Board: %s" % self.board.describe())
         print("Motor profile: %s" % (config.motor_name or "(defaults)"))
 
-        # driver enable (active low). Start disabled.
-        self.enn = digitalio.DigitalInOut(self.board.pin("enn"))
-        self.enn.direction = digitalio.Direction.OUTPUT
-        self.enn.value = True
+        # driver enable (active low). Start disabled. PCB rev 1.1 has no
+        # MCU-driven ENN (self.enn is None): see _outputs().
+        self.enn = None
+        if self.board.has("enn"):
+            self.enn = digitalio.DigitalInOut(self.board.pin("enn"))
+            self.enn.direction = digitalio.Direction.OUTPUT
+            self.enn.value = True
 
         # DIAG input (stall / fault, active high). Board has a 10k pullup
         # (R3) to 3V3, so no internal pull -- an internal pulldown would
@@ -703,6 +727,16 @@ class MotorDriver:
         self.diag.pull = None
 
         self.tmc = TMC2209(self.board.make_uart())
+        if self.enn is None:
+            # Hard-wired ENN: the TMC2209 enabled itself at power-up with
+            # its factory defaults (external-sense mode, full current
+            # scale). Switch the outputs off until enable() has written
+            # the real configuration. Fails quietly if motor power is not
+            # up yet; enable() will report that properly.
+            try:
+                self.tmc.outputs_off()
+            except RuntimeError:
+                pass
 
         self.motion = MotionController(self.board.make_stepgen(),
                                        self.board.pin("dir"), self.params)
@@ -727,6 +761,24 @@ class MotorDriver:
                                        # (sequence waits); ERROR wins
         self._dios = {}
 
+        # Board temperature (PCB rev 1.1: NTC under the TMC2209 on D3)
+        self.thermistor = None
+        self.temperature = None        # last reading, deg C (None = n/a)
+        self._temp_last_poll = 0.0
+        self._temp_warned = False
+        tcfg = config.thermistor
+        if self.board.has("thermistor") and tcfg.get("enabled", True):
+            try:
+                from axion_thermistor import Thermistor
+                self.thermistor = Thermistor(self.board.pin("thermistor"),
+                                             tcfg)
+                self.temperature = self.thermistor.read_c()
+            except (ValueError, ImportError) as e:
+                print("WARNING: thermistor unavailable on %s pin %s (%s) "
+                      "-- no board temperature monitoring"
+                      % (self.board.name,
+                         self.board.pin_name("thermistor"), e))
+
         # Optional I2C modules listed in config.json (see axion_modules).
         # Loaded last: factories may use driver methods such as is_moving.
         self.encoder = None
@@ -743,9 +795,36 @@ class MotorDriver:
             fn()
 
     # --- lifecycle -------------------------------------------------------
+    def _outputs(self, on):
+        """Switch the driver's output stage. With an ENN pin (PCB rev 1.0)
+        that is a GPIO write. Without one (rev 1.1) it is a UART write to
+        CHOPCONF.TOFF -- which can fail, so switching OFF never raises: an
+        emergency stop must still finish stopping the step generator and
+        setting the error state. NOTE: on rev 1.1 a failed switch-off
+        leaves the motor energised; there is no hardware fallback."""
+        if self.enn is not None:
+            self.enn.value = not on
+            return
+        if on:
+            self.tmc.outputs_on()
+            return
+        try:
+            self.tmc.outputs_off()
+        except RuntimeError as e:
+            print("WARNING: could not switch driver outputs off over "
+                  "UART (%s) -- motor may still be energised" % e)
+
+    def read_temperature(self):
+        """Board temperature in deg C from the thermistor, read now.
+        None if there is no thermistor or the reading is invalid."""
+        if self.thermistor is None:
+            return None
+        self.temperature = self.thermistor.read_c()
+        return self.temperature
+
     def enable(self):
         self.tmc.configure(self.params)
-        self.enn.value = False
+        self._outputs(True)
         # StealthChop runs its automatic tuning (AT#1) at standstill after
         # enable; datasheet wants >=130 ms powered standstill before the
         # first step. Matters for the idle-timeout auto-re-enable path,
@@ -765,7 +844,7 @@ class MotorDriver:
 
     def disable(self):
         self.motion.estop()
-        self.enn.value = True
+        self._outputs(False)
         self.state = self.DISABLED
 
     # --- command list ------------------------------------------------------
@@ -799,6 +878,33 @@ class MotorDriver:
             raise RuntimeError("encoder not available")
         self.encoder.poll()
         self.motion.position = int(round(self.encoder_position()))
+
+    def home_from_encoder(self):
+        """Set the position counter from the encoder's ABSOLUTE angle and
+        the home angle saved in config.json (as5601 -> home_angle, written
+        by code-set_home.py). The shaft is assumed to be within half a
+        revolution of home: the result is between -1/2 and +1/2 rev, and
+        no motion happens. Follow with move_to(0, speed) to drive home.
+        Only valid when the encoder turns 1:1 with the homed axis."""
+        if not self.encoder:
+            raise RuntimeError("encoder not available")
+        if self.motion.moving:
+            raise RuntimeError("Motion already in progress")
+        home = self.config.module("as5601").get("home_angle")
+        if home is None:
+            raise RuntimeError('no "home_angle" saved for as5601 in '
+                               'config.json (run code-set_home.py)')
+        d = self.encoder.read_raw() - int(home)
+        if d >= 2048:
+            d -= 4096
+        elif d < -2048:
+            d += 4096
+        if self.encoder.invert:
+            d = -d
+        self.encoder.zero()
+        self.encoder.counts = d
+        self.motion.position = int(round(self.encoder_position()))
+        return self.motion.position
 
     def read_position(self):
         return self.motion.position
@@ -848,11 +954,11 @@ class MotorDriver:
     def estop(self):
         """Cut current: disable driver immediately + kill step generation."""
         self.motion.estop()
-        self.enn.value = True
+        self._outputs(False)
         self.state = self.DISABLED
 
     def home_endstop(self, direction, endstop=1):
-        """Constant-speed toward endstop on D1/D2/D3; zero position on hit.
+        """Constant-speed toward an endstop terminal; zero position on hit.
         Trigger polarity comes from the endstopN_trigger parameter."""
         self._require_ready()
         es = self._dio(endstop)
@@ -912,10 +1018,34 @@ class MotorDriver:
                         tol = thr + 2 * self.motion._chunk * self.motion._scale
                         if dev > tol:
                             self.motion.estop()
-                            self.enn.value = True
+                            self._outputs(False)
                             self.error_msg = ("encoder deviation %d usteps "
                                               "(stall/crash?)" % int(dev))
                             self.state = self.ERROR
+
+        # board temperature: throttled poll + over-temperature shutdown
+        if self.thermistor is not None:
+            now = time.monotonic()
+            tcfg = self.config.thermistor
+            if (now - self._temp_last_poll) * 1000.0 >= tcfg["poll_ms"]:
+                self._temp_last_poll = now
+                t = self.thermistor.read_c()
+                self.temperature = t
+                if t is None:
+                    if not self._temp_warned:
+                        self._temp_warned = True
+                        print("WARNING: thermistor reading out of range "
+                              "(open or shorted?) -- no temperature "
+                              "monitoring")
+                else:
+                    limit = tcfg["limit_c"]
+                    if limit and t >= limit and self.state not in (
+                            self.ERROR, self.DISABLED):
+                        self.motion.estop()
+                        self._outputs(False)
+                        self.error_msg = ("board over temperature: %d C "
+                                          "(limit %d C)" % (int(t), limit))
+                        self.state = self.ERROR
 
         if self.state == self.HOMING:
             if self._homing_input and self._homing_input():
@@ -935,7 +1065,7 @@ class MotorDriver:
             # DIAG during normal motion = stall or driver fault -> error stop
             if self.diag.value:
                 self.motion.estop()
-                self.enn.value = True
+                self._outputs(False)
                 self.error_msg = "DIAG asserted (stall/fault)"
                 try:
                     self.error_msg = ("DIAG asserted: %s"
@@ -987,6 +1117,11 @@ class MotorDriver:
             raise RuntimeError("Motion already in progress")
 
     def _dio(self, n):
+        if n not in self.board.io_pins:
+            raise ValueError(
+                "D%s is not an IO terminal on Axion V%s (terminals: %s)"
+                % (n, self.board.revision,
+                   ", ".join("D%d" % i for i in self.board.io_pins)))
         mode = self.params["d%d_mode" % n]
         trigger = self.params["endstop%d_trigger" % n]
         if mode not in ("input", "output"):
@@ -1003,7 +1138,7 @@ class MotorDriver:
             self._dios[n] = cached
         return cached
 
-    # --- D1/D2/D3 general-purpose IO ------------------------------------
+    # --- general-purpose IO terminals (board.io_pins) -------------------
     def dio_mode(self, n, mode=None):
         """Get or set pin mode ('input'/'output'). Setting rebuilds the pin
         immediately and persists via the dN_mode parameter."""

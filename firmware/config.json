@@ -1,13 +1,29 @@
 {
   "board": {
     "type": "auto",
+    "revision": "1.1",
     "step_backend": "auto",
     "pins": {}
   },
 
-  "motor": "NEMA11",
+  "motor": "NEMA17",
 
   "motors": {
+	"NEMA8": {
+      "accel": 20000.0,
+      "decel": 20000.0,
+      "low_speed_cutoff": 100.0,
+      "max_speed": 20000.0,
+      "gear_threshold": 4000.0,
+      "steps_per_rev": 200,
+      "homing_speed": 800.0,
+      "sgthrs": 60,
+      "run_current": 3,
+      "hold_current": 1,
+      "internal_rsense": true,
+      "microsteps": 16,
+      "idle_timeout": 0.0
+    },
     "NEMA11": {
       "accel": 4000.0,
       "decel": 4000.0,
@@ -37,13 +53,38 @@
       "internal_rsense": true,
       "microsteps": 16,
       "idle_timeout": 0.0
+    },
+    "NEMA17": {
+      "accel": 4000.0,
+      "decel": 4000.0,
+      "low_speed_cutoff": 100.0,
+      "max_speed": 12000.0,
+      "gear_threshold": 4000.0,
+      "steps_per_rev": 200,
+      "homing_speed": 800.0,
+      "sgthrs": 60,
+      "run_current": 30,
+      "hold_current": 3,
+      "internal_rsense": true,
+      "microsteps": 16,
+      "idle_timeout": 0.0
     }
   },
 
   "io": {
+    "d0": {"mode": "output"},
     "d1": {"mode": "input", "trigger": "low"},
-    "d2": {"mode": "input", "trigger": "low"},
-    "d3": {"mode": "input", "trigger": "low"}
+    "d2": {"mode": "input", "trigger": "low"}
+  },
+
+  "thermistor": {
+    "enabled": true,
+    "wiring": "ntc_to_gnd",
+    "r_fixed": 4700,
+    "r25": 10000,
+    "beta": 3380,
+    "limit_c": 85,
+    "poll_ms": 500
   },
 
   "led": {
@@ -55,9 +96,10 @@
     "modules": {
       "as5601": {
         "enabled": true,
-        "invert": true,
+        "invert": false,
         "poll_ms": 25,
         "stall_usteps": 200
+		"home_angle": 2070
       },
       "display": {
         "enabled": true,
