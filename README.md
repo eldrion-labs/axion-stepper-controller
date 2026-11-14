@@ -6,7 +6,7 @@ This repo contains the hardware design files, the CircuitPython firmware, and ex
 
 ## Features
 
-- XIAO-footprint microcontroller: RP2040 (bench-tested), RP2350 (same code path, not yet run on hardware), ESP32-C6 (experimental, not yet run on hardware)
+- XIAO-footprint microcontroller: RP2040 (bench-tested), RP2350 (run on hardware: basic motion from a CSV sequence), ESP32-C6 (experimental, not yet run on hardware)
 - One `config.json` for motor profiles, terminal pin modes and attached I2C modules
 - TMC2209 stepper driver with StallGuard sensorless homing
 - AS5601 magnetic encoder for closed-loop position feedback
@@ -60,7 +60,7 @@ A module that is enabled but does not answer on the bus prints a warning and the
 | Board | Step generation | Status LED | Status |
 |---|---|---|---|
 | XIAO RP2040 | PIO | NeoPixel | Bench-tested |
-| XIAO RP2350 | PIO | NeoPixel | Not yet run on hardware |
+| XIAO RP2350 | PIO | NeoPixel | Run on hardware (v1.0 board): basic motion from a CSV sequence. No thermistor reading on v1.1 (D3 is not analog) |
 | XIAO ESP32-C6 | `pulseio` (RMT), blocking chunks | Single LED blink patterns | Experimental, not yet run on hardware; expect a lower top speed |
 
 ## Examples
