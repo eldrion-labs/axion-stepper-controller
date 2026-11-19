@@ -149,6 +149,14 @@ I2C_DEFAULTS = {
             "address": 60,          # 0x3C (JSON has no hex literals)
             "colstart": 0,          # column offset; 0 for HS96L03W2C03
         },
+        "sc16is752": {
+            # dual UART + GPIO bridge: PSD/4 pump, external DT system and
+            # solenoid drivers. "pump", "ext" and "solenoids" sub-sections
+            # are documented at the top of axion_serial_io.py
+            "enabled": False,
+            "address": 72,          # 0x48 (A0 = A1 = VDD)
+            "crystal_hz": 1843200,
+        },
     },
 }
 

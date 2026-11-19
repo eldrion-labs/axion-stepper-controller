@@ -51,9 +51,20 @@ axion-stepper-controller/
 | `io` | Mode and trigger polarity of the terminal pins (D1-D3 on v1.0, D0-D2 on v1.1) |
 | `thermistor` | v1.1 board temperature sensor: divider wiring, NTC constants, shutdown limit |
 | `led` | Status LED brightness |
-| `i2c.modules` | Attached I2C modules and their settings: `as5601` (encoder), `display` (SSD1306 OLED) |
+| `i2c.modules` | Attached I2C modules and their settings: `as5601` (encoder), `display` (SSD1306 OLED), `sc16is752` (dual UART + GPIO bridge) |
 
 A module that is enabled but does not answer on the bus prints a warning and the driver runs without it. To add a new I2C module, see the notes at the top of `firmware/lib/axion_modules.py`.
+
+### SC16IS752 serial and solenoid bridge
+
+An SC16IS752 breakout (such as the CJMCU-752) on the I2C bus adds two serial ports and eight GPIO. The `sc16is752` module uses them for:
+
+- **Channel A**: a Hamilton PSD/4 syringe pump in DT protocol (`pump_init`, `pump_valve`, `pump_aspirate`, `pump_dispense`, `pump_move`, raw `pump` commands)
+- **Channel B**: an external system that uses the same `/1…R<CR>` framing (`ext`, `ext_wait`)
+- **GPIO0–3**: four solenoid drivers (`solenoid, n, on|off` or `solenoid, n, pulse, seconds`)
+- **GPIO4–7**: spare inputs or outputs, with their power-up modes set in `config.json` (`gpio_mode`, `gpio`, `gpio_read`, `gpio_wait`)
+
+Set `crystal_hz` to the crystal fitted on your breakout, or every baud rate will be wrong. The chip's UART pins are logic level, so an RS232 device needs a MAX3232-type level shifter. Fit pull-downs on the solenoid driver inputs, because the GPIO pins float until the firmware configures them. The settings are documented in `firmware/lib/axion_serial_io.py`, and `sequence-pump_solenoids.csv` is a worked example.
 
 ## Board support
 

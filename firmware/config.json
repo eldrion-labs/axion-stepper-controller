@@ -98,8 +98,8 @@
         "enabled": true,
         "invert": false,
         "poll_ms": 25,
-        "stall_usteps": 200
-		"home_angle": 2070
+        "stall_usteps": 200,
+        "home_angle": 2070
       },
       "display": {
         "enabled": true,
@@ -111,6 +111,38 @@
         "sleep_after_s": 300,
         "address": 60,
         "colstart": 0
+      },
+      "sc16is752": {
+        "enabled": true,
+        "address": 72,
+        "crystal_hz": 1843200,
+        "pump": {
+          "channel": "A",
+          "baud": 9600,
+          "address": "1",
+          "resolution": "high",
+          "syringe_ul": 1000,
+          "init": "Z",
+          "move_timeout_s": 60
+        },
+        "ext": {
+          "channel": "B",
+          "baud": 9600,
+          "address": "1",
+          "reply": true,
+          "reply_timeout_s": 1.0
+        },
+        "solenoids": {
+          "pins": [0, 1, 2, 3],
+          "active_high": true,
+          "max_on_s": 0
+        },
+        "gpio": {
+          "4": "input",
+          "5": "input",
+          "6": "input",
+          "7": "input"
+        }
       }
     }
   }

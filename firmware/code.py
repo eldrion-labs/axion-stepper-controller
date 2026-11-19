@@ -67,6 +67,33 @@ comment, blank lines ignored, case-insensitive:
   display, wake                   panel on, timers restarted
   display, flush                  write now even if the motor is moving
                                   (otherwise text appears once it stops)
+SC16IS752 serial/GPIO bridge ("sc16is752" module in /config.json):
+  Pump commands wait until the PSD/4 is ready again (the motor keeps
+  running meanwhile). Add 'nowait' as the LAST field to return as soon
+  as the pump accepts the command; follow with pump_wait later.
+  pump_init                       set resolution + initialize (N1Z / N0Z)
+  pump_valve, in|out|bypass|extra valve position (or a port number)
+  pump_move, steps[, speed]       absolute plunger position (A); speed is
+                                  the V top speed, omitted = pump default
+  pump_aspirate, ul[, speed]      draw ul microlitres (P)
+  pump_dispense, ul[, speed]      push out ul microlitres (D)
+  pump, body                      raw DT command: sends /1<body>R
+  pump_wait[, timeout_s]          wait until the pump is ready
+  pump_stop                       terminate the current pump move (T)
+  ext, body                       send /1<body>R to the external system
+                                  on channel B; logs its reply
+  ext_wait[, timeout_s]           poll the external system (Q) until ready
+  solenoid, n|all, on|off         switch solenoid n (1-4) or all of them
+  solenoid, n, pulse, seconds     on for `seconds`, then off
+  Spare SC16IS752 GPIO (pins 0-7 not used by solenoids; boot-time modes
+  in config.json "gpio"):
+  gpio_mode, n, input|output      change pin n's direction (outputs
+                                  start low)
+  gpio, n, 0|1                    drive output pin n (also on/off)
+  gpio_read, n                    log pin n's level
+  gpio_wait, n, 0|1[, timeout_s]  wait until input pin n reads 0 or 1;
+                                  timeout 0 or omitted = wait forever;
+                                  timeout aborts
   OLED SETTINGS (mode, brightness, flip, dim and sleep timeouts) live in
   /config.json under "i2c" -> "modules" -> "display", not in the CSV.
   Screen mode ("mode" there):
@@ -109,6 +136,7 @@ SEQ_FILE = "/sequence.csv"
 
 oled = None   # AxionDisplay, set at startup if the "display" I2C module
               # is enabled in /config.json and answers on the bus
+sio = None    # SerialIO (SC16IS752: pump, ext, solenoids), likewise
 
 
 # ---------------------------------------------------------------- helpers
@@ -298,6 +326,196 @@ def cmd_display(drv, a):
     return True
 
 
+# ---- SC16IS752: pump, external system, solenoids ------------------------
+
+def _part(name):
+    """The SerialIO part `name` ("pump", "ext", "solenoids") or raise."""
+    if sio is None:
+        raise RuntimeError("no SC16IS752 (check the sc16is752 module in "
+                           "config.json and the console at boot)")
+    part = getattr(sio, name)
+    if part is None:
+        raise RuntimeError("%s is not configured in config.json" % name)
+    return part
+
+
+def _nowait(a):
+    """Strip a trailing 'nowait' field. Returns (args, wait)."""
+    if a and a[-1].lower() == "nowait":
+        return a[:-1], False
+    return a, True
+
+
+def _bus(fn):
+    """Run fn(); report an I2C failure as a command failure instead of
+    letting OSError escape the runner."""
+    try:
+        return fn()
+    except OSError as e:
+        raise RuntimeError("SC16IS752 I2C error (%s)" % e)
+
+
+def _pump_cmd(drv, a, action):
+    """Shared body of the pump_* commands. action(pump, args, wait, idle)."""
+    pump = _part("pump")
+    a, wait = _nowait(a)
+    idle = lambda: tick(drv)
+    _bus(lambda: action(pump, a, wait, idle))
+    return drv.state != drv.ERROR
+
+
+def _speed(a, i):
+    return float(a[i]) if len(a) > i else None
+
+
+def cmd_pump_init(drv, a):
+    return _pump_cmd(drv, a, lambda p, a, w, i: p.initialize(w, i))
+
+
+def cmd_pump_valve(drv, a):
+    return _pump_cmd(drv, a, lambda p, a, w, i: p.valve(a[0], w, i))
+
+
+def cmd_pump_move(drv, a):
+    return _pump_cmd(drv, a, lambda p, a, w, i:
+                     p.move_to(int(a[0]), _speed(a, 1), w, i))
+
+
+def cmd_pump_aspirate(drv, a):
+    return _pump_cmd(drv, a, lambda p, a, w, i:
+                     p.aspirate(float(a[0]), _speed(a, 1), w, i))
+
+
+def cmd_pump_dispense(drv, a):
+    return _pump_cmd(drv, a, lambda p, a, w, i:
+                     p.dispense(float(a[0]), _speed(a, 1), w, i))
+
+
+def cmd_pump(drv, a):
+    return _pump_cmd(drv, a, lambda p, a, w, i:
+                     p.run(a[0], w, p.move_timeout, i))
+
+
+def cmd_pump_wait(drv, a):
+    timeout = float(a[0]) if a else None
+    return _pump_cmd(drv, [], lambda p, a, w, i: p.wait_ready(
+        timeout if timeout is not None else p.move_timeout, idle=i))
+
+
+def cmd_pump_stop(drv, a):
+    return _pump_cmd(drv, [], lambda p, a, w, i: p.terminate(i))
+
+
+def cmd_ext(drv, a):
+    _part("ext")
+    data = _bus(lambda: sio.ext_send(a[0], idle=lambda: tick(drv)))
+    if data:
+        say("    ext reply: %s" % data, "ext: %s" % data)
+    return drv.state != drv.ERROR
+
+
+def cmd_ext_wait(drv, a):
+    ext = _part("ext")
+    timeout = float(a[0]) if a else 30.0
+    _bus(lambda: ext.wait_ready(timeout, idle=lambda: tick(drv)))
+    return drv.state != drv.ERROR
+
+
+def cmd_solenoid(drv, a):
+    sol = _part("solenoids")
+    which = a[0].lower()
+    action = a[1].lower()
+    if action == "pulse":
+        if which == "all" or len(a) < 3:
+            raise ValueError("use: solenoid, n, pulse, seconds")
+        n = int(which)
+        _bus(lambda: sol.set(n, True))
+        try:
+            return pump_wait(drv, float(a[2]))
+        finally:
+            _bus(lambda: sol.set(n, False))
+    if action in ("on", "1"):
+        on = True
+    elif action in ("off", "0"):
+        on = False
+    else:
+        raise ValueError("solenoid state must be on/off/1/0/pulse, got %r"
+                         % action)
+    if which == "all":
+        if on:
+            for n in range(1, len(sol) + 1):
+                _bus(lambda: sol.set(n, True))
+        else:
+            _bus(sol.all_off)
+    else:
+        n = int(which)
+        _bus(lambda: sol.set(n, on))
+    return True
+
+
+def _level(s):
+    s = s.lower()
+    if s in ("1", "on", "high"):
+        return 1
+    if s in ("0", "off", "low"):
+        return 0
+    raise ValueError("level must be 0/1 (or on/off, high/low), got %r" % s)
+
+
+def _gpio():
+    if sio is None:
+        _part("pump")                 # raises the "no SC16IS752" error
+    return sio
+
+
+def cmd_gpio_mode(drv, a):
+    s = _gpio()
+    _bus(lambda: s.gpio_mode(int(a[0]), a[1]))
+    return True
+
+
+def cmd_gpio(drv, a):
+    s = _gpio()
+    _bus(lambda: s.gpio_write(int(a[0]), _level(a[1])))
+    return True
+
+
+def cmd_gpio_read(drv, a):
+    s = _gpio()
+    pin = int(a[0])
+    v = _bus(lambda: s.gpio_read(pin))
+    say("    GPIO%d = %d" % (pin, v), "gpio%d=%d" % (pin, v))
+    return True
+
+
+def cmd_gpio_wait(drv, a):
+    s = _gpio()
+    pin, want = int(a[0]), _level(a[1])
+    timeout = float(a[2]) if len(a) > 2 else 0.0
+    if _bus(lambda: s.gpio_is_output(pin)):
+        raise ValueError("GPIO%d is an output; gpio_wait needs an input"
+                         % pin)
+    drv.led_override = StatusLED.WAITING
+    try:
+        t0 = time.monotonic()
+        next_poll = 0.0
+        while True:
+            tick(drv)
+            if drv.state == drv.ERROR:
+                return False
+            now = time.monotonic()
+            if now >= next_poll:          # ~100 Hz: keep the shared I2C
+                next_poll = now + 0.01    # bus free for the encoder
+                if _bus(lambda: s.gpio_read(pin)) == want:
+                    return True
+            if timeout and now - t0 > timeout:
+                say("!! gpio_wait GPIO%d timed out after %.1fs"
+                    % (pin, timeout), "!! GPIO%d timeout" % pin)
+                return False
+    finally:
+        drv.led_override = None
+
+
 COMMANDS = {
     "enable": (cmd_enable, 0),
     "disable": (cmd_disable, 0),
@@ -317,6 +535,21 @@ COMMANDS = {
     "verify": (cmd_verify, 1),
     "resync": (cmd_resync, 0),
     "display": (cmd_display, 1),
+    "pump_init": (cmd_pump_init, 0),
+    "pump_valve": (cmd_pump_valve, 1),
+    "pump_move": (cmd_pump_move, 1),
+    "pump_aspirate": (cmd_pump_aspirate, 1),
+    "pump_dispense": (cmd_pump_dispense, 1),
+    "pump": (cmd_pump, 1),
+    "pump_wait": (cmd_pump_wait, 0),
+    "pump_stop": (cmd_pump_stop, 0),
+    "ext": (cmd_ext, 1),
+    "ext_wait": (cmd_ext_wait, 0),
+    "solenoid": (cmd_solenoid, 2),
+    "gpio_mode": (cmd_gpio_mode, 2),
+    "gpio": (cmd_gpio, 2),
+    "gpio_read": (cmd_gpio_read, 1),
+    "gpio_wait": (cmd_gpio_wait, 2),
 }
 
 
@@ -389,6 +622,8 @@ if oled is not None:
                  % (drv.config.motor_name or ""))
     oled.update()
     print("Display: OLED, %s mode" % oled.mode)
+
+sio = drv.modules.get("sc16is752")
 
 try:
     seq = load_sequence(SEQ_FILE)
@@ -524,3 +759,9 @@ finally:
         print("Driver disabled (outputs off).")
     except Exception as e:
         print("!! could not disable driver:", e)
+    if sio is not None:
+        try:
+            sio.shutdown()
+            print("Solenoids off, pump stopped.")
+        except Exception as e:
+            print("!! could not shut down SC16IS752 outputs:", e)

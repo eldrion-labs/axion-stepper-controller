@@ -44,9 +44,25 @@ def _make_display(i2c, cfg, drv):
     return axion_display.AxionDisplay(i2c, busy=drv.is_moving, config=cfg)
 
 
+def _make_sc16is752(i2c, cfg, drv):
+    from axion_serial_io import SerialIO
+    sio = SerialIO(i2c, cfg)
+    parts = []
+    if sio.pump is not None:
+        parts.append("pump")
+    if sio.ext is not None:
+        parts.append("ext")
+    if sio.solenoids is not None:
+        parts.append("%d solenoids" % len(sio.solenoids))
+    print("SC16IS752 at 0x%02X: %s" % (sio.chip.address,
+                                       ", ".join(parts) or "nothing"))
+    return sio
+
+
 FACTORIES = {
     "as5601": _make_as5601,
     "display": _make_display,
+    "sc16is752": _make_sc16is752,
 }
 
 

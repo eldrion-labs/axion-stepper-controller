@@ -1,0 +1,14 @@
+# PSD/4 pump + solenoids + external system via the SC16IS752 bridge.
+# Needs the "sc16is752" module enabled in config.json.
+solenoid, all, off
+pump_init                       # N1Z: high resolution, home plunger + valve
+pump_valve, in
+pump_aspirate, 250, 2000        # draw 250 uL at V2000
+pump_valve, out
+solenoid, 1, on
+pump_dispense, 250, nowait      # dispense while the motor moves
+move_rel, 3200, 2000, cw
+pump_wait
+solenoid, 1, off
+solenoid, 2, pulse, 0.5
+ext, Q                          # sends /1QR to the external system
